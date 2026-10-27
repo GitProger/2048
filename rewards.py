@@ -1,6 +1,6 @@
 import numpy as np
 
-NOT_MOVING_FINE = 100
+NOT_MOVING_FINE = 10
 
 def reward_simple(prev_board, next_board, merged_value, moved):
     reward = merged_value
@@ -47,6 +47,5 @@ def reward_advanced(prev_board, next_board, merged_value, moved):
 
     basic_reward = merged_value + 0.1 * empty_bonus
     if not moved:
-    	basic_reward -= NOT_MOVING_FINE
+        basic_reward -= NOT_MOVING_FINE
     return basic_reward + 0.1 * monotonicity(next_board) + 0.1 * smoothness(next_board)
-

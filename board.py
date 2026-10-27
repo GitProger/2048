@@ -1,17 +1,21 @@
+import os
+
 import pygame
 import random
-from typing import Optional, Tuple
-from abc import abstractmethod
+from typing import Optional, Tuple, List
 
 # is always square for simplicity
 class Board:
+    DIRS = {1: (0, -1), 2: (-1, 0), 3: (0, 1), 4: (1, 0)}
+
     def __init__(self, sz):
         self.sz = sz
         self.board = [[0] * sz for _ in range(sz)]
         self.running = True
         self.max = 0
+        self.ok = lambda x, y: 0 <= x < self.sz and 0 <= y < self.sz
         self.gen()
-        self.ok = lambda x: 0 <= x < self.sz
+        self.gen()
 
     def _next(self) -> int:
         r = 2 if random.random() < 0.9 else 4
@@ -22,109 +26,125 @@ class Board:
         free = [(i, j) for i in range(self.sz) for j in range(self.sz) if self.board[i][j] == 0]
         return random.choice(free) if free else None
 
-    def check(self):
+    def can_move(self, d):
+        dx, dy = self.DIRS[d]
         b, sz = self.board, self.sz
         for i in range(sz):
             for j in range(sz):
-                if b[i][j] == 2048:
-                    return False
+                if b[i][j] == 0:
+                    continue
+                i2, j2 = i + dx, j + dy 
+                if self.ok(i2, j2) and b[i2][j2] in (0, b[i][j]):
+                    return True
+        return False
+
+    def legal_step_mask(self):
+        return [self.can_move(d) for d in range(1, 5)]
+
+    def has_moves(self):
+        b, sz = self.board, self.sz
+        for i in range(sz):
+            for j in range(sz):
                 if b[i][j] == 0 or (i + 1 < sz and b[i][j] == b[i + 1][j]) or (j + 1 < sz and b[i][j] == b[i][j + 1]):
                     return True
         return False
+
+    def check_running(self):
+        return self.has_moves() and not self.has_won()
 
     def gen(self) -> Optional[Tuple[int, int]]:
         pos = self._rndpos()
         if pos:
             i, j = pos
             self.board[i][j] = self._next()
-        self.running = self.check()
+        self.running = self.check_running()
         return pos
 
-    def _merge(self, x, y, dx, dy) -> bool:
-        cx, cy = x + dx, y + dy
-        merged = 0
-        merged_score = 0
-        moved = False
-        while self.ok(cx) and self.ok(cy):
-            if self.board[cx][cy] == 0:
-                if self.board[x][y] > 0:
-                    self.board[cx][cy] = self.board[x][y]
-                    self.board[x][y] = 0
-                    moved = True
-            elif merged < 1 and self.board[cx][cy] == self.board[x][y]:
-                self.board[cx][cy] *= 2
-                merged_value = self.board[cx][cy]
-                merged_score += merged_value
-                self.max = max(self.max, merged_value)
-                self.board[x][y] = 0
-                merged = 1
-                moved = True
-            x, y = cx, cy
-            cx, cy = x + dx, y + dy
-        return moved, merged_score
+    def collapse(self, a: List[int], dir: int) -> Tuple[bool, List[int], int]:
+        if dir == 0 or not a:
+            return False, a, 0
+        if dir not in (-1, 1):
+                raise ValueError("dir must be -1, 0 or 1")
 
-    def _move(self, dirs) -> Optional[Tuple[int, int]]:
+        step = -dir
+        moved = False
+        score = 0
+        n = len(a)
+
+        i = 0 if step == 1 else n - 1
+        l = i + step
+        end = n if step == 1 else -1
+
+        while i != end:
+            l = max(l, i + 1) if step == 1 else min(l, i - 1)
+            while l != end and a[l] == 0:
+                l += step
+
+            if l == end:
+                break
+            if a[i] == 0: # empty
+                moved = True
+                a[i] = a[l]
+                a[l] = 0
+                continue
+            elif a[i] == a[l]: # merge
+                moved = True
+                a[i] *= 2
+                score += a[i]
+                self.max = max(self.max, a[i])
+                a[l] = 0
+                i += step
+                l += step
+            else:
+                i += step
+        return moved, a, score
+
+    def _move(self, dirs, generate=True) -> Tuple[bool, int, Optional[Tuple[int, int]]]:
         if not self.running:
             return False, 0, None
         dx, dy = dirs
-        ns, ne, nd = (0, self.sz, 1) if dx != 1 else (self.sz - 1, -1, -1)
-        ms, me, md = (0, self.sz, 1) if dy != 1 else (self.sz - 1, -1, -1)
         moved = False
         merge_sum = 0
-        for i in range(ns, ne, nd):
-            for j in range(ms, me, md):
-                was, merged_score = self._merge(i, j, dx, dy)
-                moved |= was
-                merge_sum += merged_score
-        new = self.gen() if moved else None
+        if dx == 0:
+            for i in range(self.sz):
+                mv, self.board[i], sc = self.collapse(self.board[i], dy)
+                moved |= mv
+                merge_sum += sc
+        elif dy == 0:
+            for i in range(self.sz):
+                mv, a, sc = self.collapse([self.board[j][i] for j in range(self.sz)], dx)
+                for j in range(self.sz):
+                    self.board[j][i] = a[j]
+                moved |= mv
+                merge_sum += sc
+
+        new = None
+        if generate and moved:
+            new = self.gen()
         return moved, merge_sum, new
 
-    #row, col
-    def left(self):  return self._move((0, -1))
-    def up(self):    return self._move((-1, 0))
-    def right(self): return self._move((0, 1))
-    def down(self):  return self._move((1, 0))
-    def apply(self, d) -> Optional[Tuple[int, int]]:
-        if d == 0:
-            self.running = False
-            return False, 0, None
+
+    def left(self, g=True):  return self._move(self.DIRS[1], g)
+    def up(self, g=True):    return self._move(self.DIRS[2], g)
+    def right(self, g=True): return self._move(self.DIRS[3], g)
+    def down(self, g=True):  return self._move(self.DIRS[4], g)
+    def apply(self, d, generate=True) -> Optional[Tuple[int, int]]:
         dirs = {1: self.left, 2: self.up, 3: self.right, 4: self.down}
-        return dirs[d]()
+        return dirs[d](generate)
+    def stop(self):
+        self.running = False
+        return False, 0, None
+
+    def has_won(self):
+        return self.max >= 2048
+    
+    def status(self):
+        if self.running:
+            return 0
+        return 1 if self.has_won() else -1
 
     def __getitem__(self, i):
         return self.board[i]
-
-class TerminalGame:
-    def __init__(self, sz):
-        self.board = Board(sz)
-    def iteration(self):
-        step = self.wait()
-        self.board.apply(step)
-        self.render()
-    def render(self):
-        os.system('clear')
-        for i in range(self.board.sz):
-            for j in range(self.board.sz):
-                print("%5d" % self.board[i][j], end=" ")
-            print()
-    def wait(self):
-        self.board.apply(self.supply())
-    @abstractmethod
-    def supply(self):
-        pass
-
-class UserInterface(TerminalGame):
-    def __init__(self, model, sz):
-        super().__init__(sz)
-        
-    def supply(self):
-        tr = {'a': 1, 'w': 2, 'd': 3, 's': 4}
-        x = input()[0]
-        return tr[x]
-
-class NeuralInterface(TerminalGame):
-    def supply(self):
-        pass
 
 class Pygame:
     AGENT_DELAY = 500

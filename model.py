@@ -33,21 +33,21 @@ class QNetwork(nn.Module):
 class TrainParameters:
     pass
 
-def save_basic(model, file_prefix):
+def save_basic(model: nn.Module, file_prefix: str):
     torch.save(model.state_dict(), file_prefix + '_trained.zip')
 
-def load_basic(model, file_prefix):
+def load_basic(model: nn.Module, file_prefix: str):
     state = torch.load(file_prefix + '_trained.zip')
     model.load_state_dict(state)
 
-def save_model(model, file_prefix, s1, s2):
+def save_model(model: nn.Module, file_prefix: str, s1, s2):
     torch.save({
         "s1": s1,
         "s2": s2,
         "state_dict": model.state_dict()
     }, file_prefix + '_trained.pt')
 
-def load_model(file_prefix):
+def load_model(file_prefix: str) -> nn.Module:
     data = torch.load(file_prefix + '_trained.pt')
     model = QNetwork(data["s1"], data["s2"])
     model.load_state_dict(data["state_dict"])
