@@ -1,4 +1,7 @@
+import os
 import random
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -23,21 +26,120 @@ def log_episode(metrics: List, episode: int, board: Board, total_reward: int, st
         print(' ' * 6, ' '.join(["%5d" % board[i][j] for j in range(board.sz)]))
     metrics.append((total_reward, max_tile, steps))
 
-def load_checkpoint(path, model, target, optimizer):
-    pass
-        
-def save_checkpoint(path, model, target, optimizer, 
-                    episode, global_step, 
-                    eps, s1, s2, metrics, 
-                    eval_history, bast_mertic):
-    pass
+def load_checkpoint(path: str, model: nn.Module, target: nn.Module, optimizer: optim.Optimizer):
+    checkpoint: dict = torch.load(path, map_location="cpu", weights_only=False)
+    model.load_state_dict(checkpoint["model_state"])
+    target.load_state_dict(checkpoint["target_state"])
+    if optimizer is not None and checkpoint.get("optimizer_state") is not None:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+    if checkpoint.get("random_rng") is not None:
+        random.setstate(checkpoint["random_rng"])
+    if checkpoint.get("numpy_rng") is not None:
+        np.random.set_state(checkpoint["numpy_rng"])
+    if checkpoint.get("torch_rng") is not None:
+        torch.set_rng_state(checkpoint["torch_rng"])
+    return checkpoint
+
+def save_checkpoint(path: str, model: nn.Module, target: nn.Module, optimizer: optim.Optimizer,
+                    episode, global_step,
+                    eps, s1, s2, metrics,
+                    eval_history, best_metric):
+    path: Path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_state": model.state_dict(),
+        "target_state": target.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "episode": episode,
+        "global_step": global_step,
+        "eps": eps,
+        "s1": s1,
+        "s2": s2,
+        "metrics": list(metrics),
+        "eval_history": list(eval_history),
+        "best_metric": best_metric,
+        "random_rng": random.getstate(),
+        "numpy_rng": np.random.get_state(),
+        "torch_rng": torch.get_rng_state(),
+    }
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, path)
 
 def evaluate_model(model, games=20, max_steps=3000, seed=12345):
-    pass
+    games = max(1, int(games))
+    device = next(model.parameters()).device
+    random_rng = random.getstate()
+    numpy_rng = np.random.get_state()
+    torch_rng = torch.get_rng_state()
+    was_training = model.training
 
+    scores = []
+    max_tiles = []
+    wins = []
+    lengths = []
 
-def train(s1=128, s2=64, NUM_EPISODES=1024, reward_fn=reward_medium, 
-          checkpoint_prefix=prefix, eval_every=50, save_every=50):
+    model.eval()
+    try:
+        with torch.no_grad():
+            for game in range(games):
+                random.seed(seed + game)
+                np.random.seed(seed + game)
+                board = Board(4)
+                score = 0
+                step = 0
+
+                while board.running and step < max_steps:
+                    state = torch.tensor(get_state(board), dtype=torch.float32, device=device).unsqueeze(0)
+                    mask = torch.tensor(board.legal_step_mask(), dtype=torch.bool, device=device)
+                    if not mask.any().item():
+                        break
+
+                    q = model(state).squeeze(0)
+                    q[~mask] = float("-inf")
+                    act = 1 + q.argmax().item()
+
+                    moved, merged, _ = board.apply(act)
+                    score += merged
+                    step += 1
+                    if not moved:
+                        break
+
+                scores.append(float(score))
+                max_tiles.append(int(board.max))
+                wins.append(bool(board.has_won()))
+                lengths.append(int(step))
+    finally:
+        random.setstate(random_rng)
+        np.random.set_state(numpy_rng)
+        torch.set_rng_state(torch_rng)
+        model.train(was_training)
+
+    result = {
+        "games": games,
+        "avg_score": float(np.mean(scores)),
+        "avg_max_tile": float(np.mean(max_tiles)),
+        "best_max_tile": int(max(max_tiles)),
+        "win_rate": float(np.mean(wins)),
+        "avg_steps": float(np.mean(lengths)),
+        "scores": scores,
+        "max_tiles": max_tiles,
+        "wins": wins,
+        "steps": lengths,
+    }
+    print(
+        f"[eval] games={games} avg_score={result['avg_score']:.1f} "
+        f"avg_max_tile={result['avg_max_tile']:.1f} "
+        f"best_max_tile={result['best_max_tile']} "
+        f"win_rate={result['win_rate']:.1%} avg_steps={result['avg_steps']:.1f}"
+    )
+    return result
+
+def train(s1=128, s2=64, NUM_EPISODES=1024, reward_fn=reward_medium,
+          checkpoint_prefix="model", eval_every=50, save_every=50,
+          eval_games=20, eval_max_steps=3000, eval_seed=12345,
+          resume_from=None):
+
     metrics = []
     MEMORY_LIMIT = 50000
 
@@ -60,7 +162,59 @@ def train(s1=128, s2=64, NUM_EPISODES=1024, reward_fn=reward_medium,
 
     tstate = lambda board: torch.tensor(get_state(board), dtype=torch.float32).unsqueeze(0)
 
-    for episode in range(NUM_EPISODES):
+    global_step = 0
+    eval_history = []
+    best_metric = None
+    start_episode = 0
+
+    if resume_from is not None:
+        checkpoint = load_checkpoint(resume_from, model, target, optimizer)
+        start_episode = int(checkpoint.get("episode", -1)) + 1
+        global_step = int(checkpoint.get("global_step", 0))
+        eps = float(checkpoint.get("eps", eps))
+        metrics = checkpoint.get("metrics", metrics)
+        eval_history = checkpoint.get("eval_history", eval_history)
+        best_metric = checkpoint.get("best_metric", best_metric)
+        if best_metric is not None:
+            best_metric = tuple(best_metric)
+
+    last_episode = start_episode - 1
+    last_eval_episode = None
+
+
+    def save_latest(episode, tag="checkpoint"):
+        if checkpoint_prefix:
+            save_checkpoint(
+                f"{checkpoint_prefix}_{tag}.pt",
+                model, target, optimizer,
+                episode, global_step, eps, s1, s2,
+                metrics, eval_history, best_metric)
+
+    def run_eval_and_save(episode):
+        nonlocal best_metric, last_eval_episode
+        last_eval_episode = episode
+        evaluation = evaluate_model(
+            model,
+            games=eval_games,
+            max_steps=eval_max_steps,
+            seed=eval_seed,
+        )
+        eval_history.append({
+            "episode": episode,
+            "global_step": global_step,
+            **evaluation,
+        })
+        metric = (
+            evaluation["win_rate"],
+            evaluation["avg_max_tile"],
+            evaluation["avg_score"],
+        )
+        if best_metric is None or metric > best_metric:
+            best_metric = metric
+            save_latest(episode, tag="best")
+
+    for episode in range(start_episode, NUM_EPISODES):
+        last_episode = episode
         board = Board(4)
         done = False
         state = tstate(board)
@@ -118,6 +272,7 @@ def train(s1=128, s2=64, NUM_EPISODES=1024, reward_fn=reward_medium,
             if len(memory) > MEMORY_LIMIT:
                 memory.popleft()
             state = next_state
+            global_step += 1
 
             assert torch.equal(state, tstate(board))
 
@@ -161,7 +316,16 @@ def train(s1=128, s2=64, NUM_EPISODES=1024, reward_fn=reward_medium,
 
         log_episode(metrics, episode, board, total_reward, step)
 
+        if eval_every and (episode + 1) % eval_every == 0:
+            run_eval_and_save(episode)
+        if save_every and (episode + 1) % save_every == 0:
+            save_latest(last_episode)
+
     target.load_state_dict(model.state_dict()) # sync
+
+    if eval_every and last_episode >= start_episode and last_eval_episode != last_episode:
+        run_eval_and_save(last_episode)
+    save_latest(last_episode)
     return target, metrics
 
 
