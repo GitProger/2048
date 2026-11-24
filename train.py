@@ -154,10 +154,10 @@ def train(s1=128, s2=64, NUM_EPISODES=1024, reward_fn=reward_medium,
     # 0.995, 0.1 - rewards were quite random, even for advanced function, max was in [64, 128, 256 (rare)]
     # p.s. actually there was a bug, _move returned last merged_score not merge_sum
     eps_decay = 0.99 # 0.995
-    eps_min = 0.1
+    eps_min = 0.02
     gamma = 0.985
 
-    batch_size = 32
+    batch_size = 64
     memory = deque(maxlen=MEMORY_LIMIT+10)
 
     tstate = lambda board: torch.tensor(get_state(board), dtype=torch.float32).unsqueeze(0)

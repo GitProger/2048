@@ -10,8 +10,8 @@ def play_human():
     ui = Pygame(board)
     ui.run()
 
-def play_agent(model_filename_prefix):
-    model = load_model(model_filename_prefix)
+def play_agent(model_filename):
+    model = load_model(model_filename)
     board = Board(4)
     ui = Pygame(board)
     agent = Agent(model)
