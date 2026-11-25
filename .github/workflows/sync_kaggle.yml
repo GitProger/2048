@@ -1,0 +1,40 @@
+name: Sync to Kaggle Dataset
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Kaggle CLI
+        run: pip install --upgrade kaggle
+
+      - name: Prepare Dataset Metadata
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+        run: |
+          mkdir -p build
+          cp -r *.py requirements.txt build/
+          cat <<EOF > build/dataset-metadata.json
+          {
+            "title": "2048 RL Code",
+            "id": "${KAGGLE_USERNAME}/2048-rl",
+            "licenses": [{"name": "MIT"}]
+          }
+          EOF
+
+      - name: Push new version to Kaggle
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+        run: |
+          kaggle datasets version -p build -m "Auto-update from GitHub (${{ github.sha }})"
