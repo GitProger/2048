@@ -1,6 +1,10 @@
 import numpy as np 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from board import Board
+
+N_RANKS = 16 # 12
 
 # from importlib import reload
 
@@ -32,6 +36,15 @@ def get_state(b):
     # return out.reshape(-1) 
     return out.flatten()
 
+def get_emb_state(b: Board):
+    b = np.array(b.board)
+    mask = b > 0
+    ranks = np.zeros(b.shape, dtype=np.int64)
+    ranks[mask] = np.log2(b[mask]).astype(np.int64)
+    return ranks.flatten()
+    # return F.one_hot(torch.tensor(ranks), 16)
+
+
 class QNetwork(nn.Module):
     def __init__(self, s1=128, s2=64):
         super().__init__()
@@ -44,11 +57,27 @@ class QNetwork(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
+class QNetworkEmbed(nn.Module):
+    def __init__(self, d=16, h=256):
+        super().__init__()
+        self.emb = nn.Embedding(N_RANKS, d)
+        self.mlp = nn.Sequential(
+            nn.Linear(16 * d, h), nn.ReLU(),
+            nn.Linear(h, h), nn.ReLU(),
+            nn.Linear(h, 4),
+        )
+
+    def forward(self, x: torch.Tensor):
+        x = self.emb(x).flatten(1)
+        return self.mlp(x)
+
+
 class QNetworkLookForward(nn.Module):
     pass
 
 class ConvNetwork(nn.Module):
-    def __init__(self, ds=[64, 128], h=2**16, kernels=[(1,2),(2,1)]):
+    def __init__(self, ds=[64, 128], h=128, kernels=[(1,2),(2,1)]):
         layers = []
         dims = [1] + ds
         for i, k in enumerate(kernels):
