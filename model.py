@@ -57,6 +57,19 @@ class QNetwork(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+class QNetworkOneHot(nn.Module):
+    # Embedding vector for 2048, 4096 almost never encountered, so large values too noisy 
+    def __init__(self, d=16, h=256):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(16 * d, h), nn.ReLU(),
+            nn.Linear(h, h), nn.ReLU(),
+            nn.Linear(h, 4),
+        )
+
+    def forward(self, x: torch.Tensor):
+        return self.mlp(x.flatten(1))
+
 
 class QNetworkEmbed(nn.Module):
     def __init__(self, d=16, h=256):
@@ -78,6 +91,8 @@ class QNetworkLookForward(nn.Module):
 
 class ConvNetwork(nn.Module):
     def __init__(self, ds=[64, 128], h=128, kernels=[(1,2),(2,1)]):
+        super().__init__()
+        assert len(ds) == len(kernels)
         layers = []
         dims = [1] + ds
         for i, k in enumerate(kernels):
